@@ -1,150 +1,158 @@
-'use strict';
+'use strict'
 
-const express     = require('express')
-const app         = express()
-const server      = require('http').createServer(app)
-const io          = require('socket.io')(server)
-const Client      = require('castv2').Client
-const mdns        = require('mdns')
-const mongoose    = require('mongoose')
-mongoose.Promise  = require('bluebird')
-const bodyParser  = require('body-parser')
-const path        = require('path')
-const fs          = require('fs')
+const express = require('express')
+const app = express()
+const server = require('http').createServer(app)
+const io = require('socket.io')(server)
+const Client = require('castv2').Client
+const mdns = require('mdns')
+const mongoose = require('mongoose')
+mongoose.Promise = require('bluebird')
+const bodyParser = require('body-parser')
+const path = require('path')
+const fs = require('fs')
 
-const Chromecast  = require('./models/Chromecast')
-const Channel     = require('./models/Channel')
+const Chromecast = require('./models/Chromecast')
+const Channel = require('./models/Channel')
 
-const config = require('./lib/config')
-const dbConnect = require('./lib/dbConnect')
+/* find a better way to handle launch flags */
+const optServeOnly = process.argv.find(arg => arg == '--serve-only')
+const optController = process.argv.find(arg => arg == '--controller')
+const optServer = process.argv.find(arg => arg == '--server')
+const optMixed = process.argv.find(arg => arg == '--mixed')
+if (optMixed) {
+  optController = true
+  optServer = true
+}
 
-const port = 3944
-const serveOnly = process.argv.find(arg => arg == '--serve-only')
-
-var takeover = null
-
-dbConnect(config)
+/**
+ * TO-DO: Break out controller and endpoint functions
+ *          controller => ./lib/controller
+ *            endpoint => ./lib/endpoint
+ * TO-DO: Separate controller device list from endpoint list
+ * TO-DO: Implement endpoint calls as REST API
+ */
 
 /* Establish connection with Chromecast devices on local network */
 
 var devices = [],
-findDevices = () => {
+  findDevices = () => {
 
-  /* Look for mDNS Cast devices on local network */
-  var browser = mdns.createBrowser(mdns.tcp('googlecast'))
+    /* Look for mDNS Cast devices on local network */
+    var browser = mdns.createBrowser(mdns.tcp('googlecast'))
 
-  /* Only scan IPv4 addresses */
-  mdns.Browser.defaultResolverSequence[1] = 'DNSServiceGetAddrInfo' in mdns.dns_sd ?
-    mdns.rst.DNSServiceGetAddrInfo() : mdns.rst.getaddrinfo({ families: [4] })
+    /* Only scan IPv4 addresses */
+    mdns.Browser.defaultResolverSequence[1] = 'DNSServiceGetAddrInfo' in mdns.dns_sd ?
+      mdns.rst.DNSServiceGetAddrInfo() : mdns.rst.getaddrinfo({ families: [4] })
 
-  browser.on('serviceUp', service => {
-    // service.name: Chromecast-hexadecimalid
-    var id = service.name.split('-').pop(),
-      i = devices.findIndex(d => d.deviceId == id)
+    browser.on('serviceUp', service => {
+      // service.name: Chromecast-hexadecimalid
+      var id = service.name.split('-').pop(),
+        i = devices.findIndex(d => d.deviceId == id)
 
-    /* If device is registered, append local statistics */
-    if (i > -1) {
-      devices[i].name = service.txtRecord.fn
-      devices[i].address = service.addresses[0]
-      devices[i].port = service.port
-      if (devices[i].status == 'offline') {
-        devices[i].status = 'waiting'
-        launchHub(service.addresses[0])
+      /* If device is registered, append local statistics */
+      if (i > -1) {
+        devices[i].name = service.txtRecord.fn
+        devices[i].address = service.addresses[0]
+        devices[i].port = service.port
+        if (devices[i].status == 'offline') {
+          devices[i].status = 'waiting'
+          launchHub(service.addresses[0])
+        }
+
+        /* Otherwise, add info for unregistered device */
+      } else {
+        devices.push({
+          unregistered: true,
+          deviceId: id,
+          name: service.txtRecord.fn,
+          address: service.addresses[0],
+          port: service.port
+        })
       }
+    })
 
-    /* Otherwise, add info for unregistered device */
-    } else {
-      devices.push({
-        unregistered: true,
-        deviceId: id,
-        name: service.txtRecord.fn,
-        address: service.addresses[0],
-        port: service.port
-      })
-    }
-  })
+    /* Begin searching */
+    browser.start()
 
-  /* Begin searching */
-  browser.start()
+    /* Stop searching after 15 seconds */
+    setTimeout(() => browser.stop(), 15 * 1000)
+  },
 
-  /* Stop searching after 15 seconds */
-  setTimeout(() => browser.stop(), 15 * 1000)
-},
+  /* Establish connection with Chromecast */
+  launchHub = host => {
 
-/* Establish connection with Chromecast */
-launchHub = (host) => {
+    if (host) {
 
-  if (host) {
+      var d = devices.find(d => d.address == host)
 
-    var d = devices.find(d => d.address == host)
+      d.connectionFailCount = 0
+      if (d.status == 'offline' || d.status == 'waiting') {
 
-    d.connectionFailCount = 0
-    if (d.status == 'offline' || d.status == 'waiting') {
+        const client = new Client()
+        client.connect(host, () => {
 
-      const client = new Client()
-      client.connect(host, () => {
+          // reset number of failed connection attempts
+          d.connectionFailCount = 0
 
-        // reset number of failed connection attempts
-        d.connectionFailCount = 0
+          // create various namespace handlers
+          d.connection = client.createChannel('sender-0', 'receiver-0', 'urn:x-cast:com.google.cast.tp.connection', 'JSON')
+          d.heartbeat = client.createChannel('sender-0', 'receiver-0', 'urn:x-cast:com.google.cast.tp.heartbeat', 'JSON')
+          d.receiver = client.createChannel('sender-0', 'receiver-0', 'urn:x-cast:com.google.cast.receiver', 'JSON')
 
-        // create various namespace handlers
-        d.connection = client.createChannel('sender-0', 'receiver-0', 'urn:x-cast:com.google.cast.tp.connection', 'JSON')
-        d.heartbeat = client.createChannel('sender-0', 'receiver-0', 'urn:x-cast:com.google.cast.tp.heartbeat', 'JSON')
-        d.receiver = client.createChannel('sender-0', 'receiver-0', 'urn:x-cast:com.google.cast.receiver', 'JSON')
+          // establish virtual connection to the receiver
+          d.connection.send({ type: 'CONNECT' })
 
-        // establish virtual connection to the receiver
-        d.connection.send({ type: 'CONNECT' })
-
-        // start heartbeating
-        d.missedHeartbeats = 0
-        d.pulse = setInterval(() => {
-          d.missedHeartbeats++
-          if (d.missedHeartbeats > 6) { // receiver has been offline for more than 30 seconds
-            d.status = 'offline'        // mark receiver as offline
-            clearInterval(d.pulse)  // stop checking for pulse :(
-          } else d.heartbeat.send({ type: 'PING' })
-        }, 5 * 1000)
-        d.heartbeat.on('message', (data, broadcast) => {
-          if (data.type == 'PONG') {
-            d.missedHeartbeats = 0
-            d.status = 'online'
-          }
-        })
-
-        // launch hub app
-        d.receiver.send({ type: 'LAUNCH', appId: config.appId, requestId: 1 })
-
-        // monitor receiver status updates to insure hub is open
-        d.receiver.on('message', (data, broadcast) => {
-          if (data.type != 'RECEIVER_STATUS') console.log(data.type)
-          if (data.type = 'RECEIVER_STATUS') {
-            // data.status contains relevant information about current app, volume, etc
-            if (data.status && data.status.applications) {
-              var apps = data.status.applications
-
-              /* Backdrop means that our hub applications has stopped running, so we need to restart it */
-              if (apps.find(a => a.displayName == 'Backdrop')) {
-                console.log('relaunching hub...')
-                d.receiver.send({ type: 'LAUNCH', appId: config.appId, requestId: 1 })
-              }
-
+          // start heartbeating
+          d.missedHeartbeats = 0
+          d.pulse = setInterval(() => {
+            d.missedHeartbeats++
+            if (d.missedHeartbeats > 6) { // receiver has been offline for more than 30 seconds
+              d.status = 'offline'        // mark receiver as offline
+              clearInterval(d.pulse)  // stop checking for pulse :(
+            } else d.heartbeat.send({ type: 'PING' })
+          }, 5 * 1000)
+          d.heartbeat.on('message', (data, broadcast) => {
+            if (data.type == 'PONG') {
+              d.missedHeartbeats = 0
+              d.status = 'online'
             }
-          }
+          })
+
+          // launch hub app
+          d.receiver.send({ type: 'LAUNCH', appId: config.appId, requestId: 1 })
+
+          // monitor receiver status updates to insure hub is open
+          d.receiver.on('message', (data, broadcast) => {
+            if (data.type != 'RECEIVER_STATUS') console.log(data.type)
+            if (data.type = 'RECEIVER_STATUS') {
+              // data.status contains relevant information about current app, volume, etc
+              if (data.status && data.status.applications) {
+                var apps = data.status.applications
+
+                /* Backdrop means that our hub applications has stopped running, so we need to restart it */
+                if (apps.find(a => a.displayName == 'Backdrop')) {
+                  console.log('relaunching hub...')
+                  d.receiver.send({ type: 'LAUNCH', appId: config.appId, requestId: 1 })
+                }
+
+              }
+            }
+          })
+
+        })
+        client.on('error', () => {
+          d.connectionFailCount++
+          if (d.connectionFailCount > 6) { // receiver hasn't responded after 60 seconds
+            clearTimeout(d.connectionFail)
+          } else d.connectionFail = setTimeout(() => launchHub(host), 10 * 1000)
         })
 
-      })
-      client.on('error', () => {
-        d.connectionFailCount++
-        if (d.connectionFailCount > 6) { // receiver hasn't responded after 60 seconds
-          clearTimeout(d.connectionFail)
-        } else d.connectionFail = setTimeout(() => launchHub(host), 10 * 1000)
-      })
+      }
 
     }
 
   }
-
-}
 
 /* Establish socket.io service */
 
@@ -210,13 +218,15 @@ app.post('/message/edit', (req, res) => {
 app.get('/landing', (req, res) => {
 
   var ip = stripIPv6(req.connection.remoteAddress), // Get IPv4 address of device
-      d = devices.find(d => d.address == ip)        // Find local info for device
+    d = devices.find(d => d.address == ip)        // Find local info for device
   if (d) res.redirect(`/device/${d.deviceId}`)      // Redirect to device display
-  else res.render('setup-chromecast', { device: {   // If not recognized, display information
-    address: ip,
-    deviceId: 'n/a',
-    name: 'Unrecognized Device'
-  }, registered: false, setupUrl: `${req.protocol}://${req.hostname}:${port}/` })
+  else res.render('setup-chromecast', {
+    device: {   // If not recognized, display information
+      address: ip,
+      deviceId: 'n/a',
+      name: 'Unrecognized Device'
+    }, registered: false, setupUrl: `${req.protocol}://${req.hostname}:${port}/`
+  })
 })
 
 /* Devices */
@@ -475,7 +485,7 @@ server.listen(port, () => {
   console.log('MultiCast is live!')
   console.log(`listening at port ${port}...`)
 
-  if (!serveOnly) {
+  if (!optServeOnly
 
     /* load saved devices */
     Chromecast.find().populate('channel').exec((err, _devices) => {
@@ -494,7 +504,7 @@ server.listen(port, () => {
       }, 30 * 1000)
     })
 
-  }
+}
 })
 
 /* Utility */

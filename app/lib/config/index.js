@@ -1,7 +1,7 @@
 const fs = require('fs')
 const path = require('path')
 
-const configPath = path.resolve(__dirname, '..', '..', '.config')
+const configPath = path.resolve(__dirname, '..', '..', '..', '.config')
 const configVariables = [
   'appId',
   'mongoUser',
@@ -24,7 +24,7 @@ try {
 
   // Skips if the full config is already in the environment variables
   if (!envUsed) module.exports = JSON.parse(fs.readFileSync(configPath))
-  
+
 } catch (e) {
   console.log(`No config file found in ${configPath}
 Please run

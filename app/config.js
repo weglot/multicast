@@ -1,9 +1,9 @@
-'use strict';
+'use strict'
 
-const path        = require('path')
-const fs          = require('fs')
-const readline    = require('readline')
-const rl          = readline.createInterface({
+const path = require('path')
+const fs = require('fs')
+const readline = require('readline')
+const rl = readline.createInterface({
   input: process.stdin,
   output: process.stdout
 })
@@ -59,7 +59,7 @@ var startConfig = () => {
     console.log(opts)
     console.log('')
   }).then(() => demand('(y/N)', /[yn]/i)).then(res => {
-    if(/y/i.test(res)) {
+    if (/y/i.test(res)) {
       saveOpts(opts, () => {
         console.log('')
         console.log('Configuration updated! To get started, just run\n' +
