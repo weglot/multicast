@@ -1,0 +1,26 @@
+@import url('https://dashboard.weglot.com/public/fonts/lemon_milk/LemonMilk.otf');
+html, body {
+  margin: 0;
+  padding: 0;
+  background: #111214;
+  color: #fff;
+  font-family: 'Lemon Milk';
+  font-weight: 700;
+}
+
+#message {
+  color: #3741cc;
+  font-size: 22vh;
+  position: fixed;
+  top: 50%; left: 50%;
+  width: 90vw;
+  text-align: center;
+  transform: translate(-50%, -50%);
+}
+
+#clock {
+  position: fixed;
+  color: #fff;
+  font-size: 4vh;
+  top: 20px; right: 20px;
+}
